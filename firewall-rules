@@ -1,0 +1,856 @@
+#! /bin/bash
+# Enrutador/Cortafuegos principal de Empresa
+# Configuración en modo cortafuegos (operativa)
+#
+#--
+# PRELIMINARES
+#--
+#
+# Se carga la configuración
+#
+# PARÁMETROS DE CONFIGURACIÓN DEL ENRUTADOR/CORTAFUEGOS
+
+# Ejecutables utilizados
+readonly IPTABLES=/sbin/iptables             # ruta al binario de iptables
+readonly LOGGER=/usr/bin/logger              # ruta al binario logger
+readonly MODPROBE=/sbin/modprobe             # ruta al binario modprobe
+
+# Interfaces y direcciones IP declaradas
+readonly ETH_LAN="eth0"                      # interfaz de red conectada a la red interna (estaciones de trabajo)
+readonly ETH_SERVIDORES="eth1"               # interfaz de red conectada a la red de servidores
+readonly ETH_SCREENED="eth3"                 # interfaz de red conectada a la red SCREENED
+readonly ETH_WAN="brWAN"                     # interfaz de red con direccionamiento público
+readonly TUN_VPN=tun0                        # interfaz TUN utilizada por la configuración común de OpenVPN (UDP)
+readonly TUN_VPN_TCP=tun1                    # interfaz TUN utilizada por la configuración común de OpenVPN (TCP)
+readonly TUN_VPN_SEDES=tun2                  # interfaz TUN utilizada por la configuración de OpenVPN para conexión entre sedes
+readonly TUN_VPN_SOPORTE=tun3                # interfaz TUN para los túneles a clientes de soporte
+readonly TUN_VPN_SEDE_ZONA2=tun4             # interfaz TUN utilizada por la configuración de OpenVPN para conexión con la sede de Zona2
+readonly TUN_VPN_SOPORTE_ELCLIENTE=tun5      # interfaz TUN utilizada por la configuración de OpenVPN para conexión con el Ayuntamiento de El Cliente
+readonly IP_LAN=192.168.17.16                # Dirección IP del "lado privado" del equipo
+readonly IP_WAN=222.333.250.125              # Dirección IP del "lado público" del equipo
+readonly IP_WAN_MADRID=222.333.250.126       # Dirección IP externa "robada" a madrid.empresa.com (antiguo enrutador público)
+readonly IP_WAN_MAILHUB=222.333.250.118      # Dirección IP externa del mailhub de correo corporativo
+readonly IP_WAN_WEBMAIL=222.333.250.118      # Dirección IP externa del webmail de correo corporativo
+readonly IP_WAN_NS1=222.333.250.114          # Dirección IP externa para el DNS público ns1.empresa.net
+readonly IP_WAN_NS2=222.333.250.115          # Dirección IP externa para el DNS público ns2.empresa.net
+readonly IP_WAN_WEBSERVICES=222.333.250.119  # Dirección IP externa para servicios web públicos
+readonly IP_WAN_ADSL=222.333.21.143          # Dirección IP externa para la ADSL
+readonly IP_SOPORTE=222.333.250.121          # Dirección IP pública para túneles a clientes de soporte
+readonly IP_WAN_REDIR_IPT=222.333.250.117    # Dirección IP externa para redirecciones por IPTABLES temporales
+readonly IP_WAN_VPN=222.333.250.123          # Dirección IP externa para VPNs entre sedes
+readonly IP_STACKOPS=192.168.14.14           # Dirección IP para las pruebas de stackops
+
+
+readonly NET_LOCALHOST='127.0.0.0/8'         # red correspondiente al "loopback"
+readonly NET_DMZ='222.333.250.112/28'        # Pool IP público adquirido a NEO-SKY
+#readonly NET_LAN='192.168.0.0/16'            # Redes privadas en nuestras instalaciones (con el tiempo convendrá precisar más)
+# Precisemos más
+readonly NET_SCREENED='192.168.14.0/24'      # Red privada para albergar máquinas externas
+readonly NET_OPENSTACK='10.20.30.0/24'       # Red privada para albergar máquinas externas de OpenStack
+readonly NET_TELEFONIA='192.168.20.0/24'     # Red de telefonía
+readonly NET_WIFI='192.168.10.0/24'          # Red de puntos de acceso wifi, impresoras y DHCP de PCs sin registrar
+readonly NET_LAN='192.168.7.0/24'            # Red de estaciones de trabajo
+readonly NET_SERVIDORES='192.168.16.0/23'    # Red privada para albergar servidores
+readonly NET_ZAMUDIO='192.168.32.0/24'       # Red de Zamudio
+readonly NET_PANAMA_SERVERS='192.168.61.0/24' # Red de servidores para Panamá
+readonly NET_PANAMA_PCS='192.168.63.0/24'    # Red de PCs para Panamá
+readonly NET_PANAMA_PHONES='192.168.65.0/24' # Red de teléfonos para Panamá
+
+# Datos de configuración para el servicio OpenVPN
+readonly PUERTO_VPN=1194                     # "Puerto Bien Conocido" (WKP) reservado por la IANA para el servicio OpenVPN (usuarios y Ayuntamiento de El Cliente
+readonly PUERTO_VPN_TEST=1111                # Puerto reservado para la VPN de prueba en el cambio de CA
+readonly PUERTO_VPN_SEDES=1195               # Puerto reservado servicio OpenVPN entre sedes
+readonly PUERTO_VPN_SEDE_PANAMA=1198         # Puerto reservado servicio OpenVPN para la sede de Panamá
+readonly PUERTO_VPN_SOPORTE_ELCLIENTE=1191   # Puerto reservado servicio OpenVPN para el Ayuntamiento del Cliente
+readonly NET_OPENVPN='10.64.0.0/23'          # Red dedicada a las conexiones mediante OpenVPN
+readonly NET_OPENVPN_TCP='10.69.0.0/23'      # Red dedicada a las conexiones mediante OpenVPN para usuarios internos
+readonly NET_OPENVPN_SEDES='10.66.0.0/24'    # Red dedicada a las conexiones mediante OpenVPN para el nuestra sede en Zamudio
+readonly NET_OPENVPN_SEDE_PANAMA='10.68.0.0/24' # Red dedicada a las conexiones mediante OpenVPN para nuestra sede en Panamá
+# Direcciones IP interesantes
+readonly IP_DNSPUBLICO1='192.168.17.50'      # dirección IP de nuestro servidor DNS público
+readonly IP_DNSPUBLICO2='192.168.17.78'      # dirección IP de nuestro servidor DNS público
+readonly IP_DNSINTERNO='192.168.17.70'       # dirección IP de nuestro servidor DNS interno
+readonly IP_DNSINTERNO_PANAMA1='192.168.61.13'       # dirección IP de nuestro servidor DNS interno primario de Panamá
+readonly IP_DNSINTERNO_PANAMA2='192.168.61.23'       # dirección IP de nuestro servidor DNS interno secundario de Panamá
+readonly IP_TFTPSERVER='192.168.17.70'       # dirección IP de nuestro servidor DNS interno
+readonly IP_SVN='192.168.17.20'              # dirección IP del servidor de Subversion (gestión de código fuente de proyectos - atenea)
+
+# Direcciones IP en la VPN desde las que accede personal de otraempresa para proyectox.empresa.net
+readonly VPN_PROYECTOX=( "10.64.1.24"
+	                 "10.64.1.32" )
+# Direcciones IP de las máquinas a las que acceden
+readonly IP_OTRAEMPRESA_PROYECTOX='192.168.14.3'  # dirección IP para proyectox.empresa.net
+
+# Flash Media Server flash-media-devel.empresa.com
+# Direccion IP del cliente a conectar al Flash Media Server flash-media-devel.empresa.com
+readonly IP_CLIENTE_MSF='222.333.251.93'
+# Direccion ip del flash-media-devel.empresa.com
+readonly IP_FLASH_MEDIA_DEVEL='192.168.14.27'
+# Direccion ip de media-ahs-demo-market.empresa.com
+readonly IP_MEDIA_HSA_DEMO_MARKET='192.168.16.156'
+
+# Direcciones IP en la VPN desde las que accede personal para EMPRESA-CRM-PRE (lista separada por espacios o retornos de carro)
+readonly VPN_EMPRESA_CRM_PRE=( "10.64.1.94" )
+# Direcciones IP de las máquinas a las que acceden
+readonly IP_EMPRESA_CRM_PRE=( "192.168.14.5" )
+
+# Emparejamientos IP/Puerto interesantes
+readonly IP_AMANDA=192.168.17.100            # Dirección del servidor de Amanda (copias de seguridad)
+readonly IP_APT=192.168.16.41                # Dirección del servidor apt-proxy (actualizaciones de Debian)
+readonly IP_MADRID=222.333.250.126           # Dirección IP de madrid.empresa.com (enmascarador de la red interna)
+readonly IP_MAILHUB=192.168.17.223           # Dirección IP de mtatransport.empresa.com (mailhub del correo corporativo)
+readonly IP_WEBMAIL=192.168.17.114            # Dirección IP de beleg.empresa.net (webmail del correo corporativo)
+readonly IP_OTRAEMPRESAMAS5=222.333.250.120           # Dirección IP del servidor de túneles al OTRAEMPRESAMAS5
+readonly IP_MONITOR=192.168.17.50            # Dirección IP de nuestro servidor de monitorización
+readonly IP_SMTP=192.168.17.114               # Servidor de correo de la sede central de Empresa en Getafe
+readonly IP_ORACLE=192.168.17.80             # Servidor de base de datos oracle.empresa.net
+
+readonly PUERTO_AMANDA=10080                 # Puerto (UDP) utilizado por Amanda para hacer el backup
+readonly PUERTO_APT=9999                     # Puerto utilizado por el servidor apt-proxy (actualizaciones de Debian)
+readonly PUERTO_NRPE=5666                    # Puerto para las conexiones NRPE (acceso remoto de Nagios)
+readonly PUERTO_NSCA=5667                    # Puerto para las conexiones NSCA (acceso remoto de Nagios)
+readonly IP_SERVITUX=222.333.202.218           # Dirección IP de Servitux (mantenimiento de la centralita VoIP)
+readonly IP_VOIP=192.168.20.2                # Dirección IP de nuestra centralita VoIP (gestionada por Servitux)
+readonly PUERTO_VOIP=4569                    # Puerto de servicio VoIP de la centralita
+readonly PUERTO_ORACLE=1521                  # Puerto para el acceso a oracle.empresa.net
+
+readonly IP_PROYECTOX=192.168.14.7             # IP para proyectox-devel.empresa.com a la que hay que dar acceso externo
+readonly IP_ORTHANC=192.168.17.8             # IP para orthanc.empresa.net a la que hay que dar acceso externo para NSCA
+readonly IP_CLAVE='192.168.16.51'            # dirección IP interna para la máquina virtual TEMPORAL de Clave
+readonly IP_OTRAEMPRESAMAS1=192.168.14.6           # dirección IP interna para la máquina virtual TEMPORAL de otraempresamas1
+readonly IP_PORTALCONTUR=192.168.14.15       # dirección IP interna para la máquina virtual Portalcontur-demo
+readonly IP_CONTUR=192.168.17.5              # dirección IP interna para la máquina virtual contur-demo
+readonly IP_CLEAN_DEMO=192.168.16.141        # dirección IP interna para la máquina virtual clean-demo
+readonly IP_WESTATICAS=192.168.16.22         # dirección IP interna para la máquina virtual westaticas
+
+# IPs de acceso de otraempresamas1
+readonly IP_CSNTN_SSH=( '222.333.154.199' '222.333.160.146' '222.333.45.132' '222.333.213.10')
+#readonly IP_CSNTN_WEB=( '222.333.32.59' '222.333.32.51' '222.333.122.50' '222.333.159.5' '222.333.154.199' '222.333.160.146' )
+
+# IPs privadas de servidores de TOUREXP devel y demo.
+readonly IP_TOUREXP_DEVEL=192.168.14.16      # dirección IP interna para la máquina virtual tourexp-devel
+readonly IP_TOUREXP_DEMO=192.168.14.17       # dirección IP interna para la máquina virtual tourexp-devel
+readonly IP_TOUREXP_CHECKOUT=192.168.7.113   # dirección IP interna para la máquina tourexp-checkout
+
+# IPs de clientes que se conectan a TOUREXP devel y demo por SSH
+readonly IP_TOUREXP_SSH=( '222.333.252.11' '222.333.183.98' '222.333.175.23' '222.333.138.231' '222.333.138.232' '222.333.237.26' '222.333.138.68' '222.333.196.122')
+
+# IPs de clientes que se conectan a TOUREXP devel y demo por POSTGRES
+readonly IP_TOUREXP_POSTGRES=( '222.333.183.98' '222.333.195.57' '222.333.36.18' '222.333.99.10' '222.333.196.122' '222.333.252.11' '222.333.20.1' '222.333.196.122' '222.333.25.57' '222.333.138.72' '222.333.138.68' '222.333.138.37' )
+
+# IPs privadas del servidor devel de OpenCitizen
+readonly IP_OZ_DEVEL=192.168.14.18           # dirección IP interna para la máquina virtual oz-devel
+
+# IPs de clientes que se conectan a devel de OpenCitizen
+readonly IP_OZ_DEVEL_SSH=( '222.333.186.190' $IP_WAN_ADSL )
+
+# IPs de clientes que se conectan a PORTALCONTUR-DEMO
+readonly IP_PORTALCONTUR_DEMO_SSH=( '222.333.214.7' '222.333.52.194' '222.333.75.150' '222.333.252.11' '222.333.183.98' '222.333.156.200' '222.333.172.6' '222.333.24.129' '222.333.0.164' )
+readonly IP_PORTALCONTUR_DEMO_POSTGRES=( '222.333.24.129' '222.333.252.11' '222.333.75.150' '222.333.52.194' '222.333.201.233' )
+
+# IPs de clientes que se conectan a CLEAN-DEMO
+readonly IP_CLEAN_DEMO_POSTGRES=( '222.333.145.165' )
+
+# IPs de clientes que se conectan a CONTUR-DEMO
+readonly IP_CONTUR_DEMO_SSH=( '222.333.214.7' )
+
+# IPs de máquinas de preproducción para correo de otraempresamas2
+readonly IP_CORREO_OTRAEMPRESAMAS2_FRONTAL='192.168.14.8' # Preproducción del correo de otraempresamas2
+readonly IP_CORREO_OTRAEMPRESAMAS2_BUZONES='192.168.14.9' # Preproducción del correo de otraempresamas2
+readonly IP_CORREO_OTRAEMPRESAMAS2_CLIENTE='192.168.14.10' # Preproducción del correo de otraempresamas2
+# IP de las máquinas de producción para correo de otraempresamas2
+readonly IP_MAIL_OTRAEMPRESAMAS2_ES="222.333.119.135"   # IP de mail.otraempresamas2.es
+
+# IP de acceso de otraempresamas3
+readonly IP_OTRAEMPRESAMAS3="222.333.9.102"
+readonly IP_OPENCITIES_OTRAEMPRESAMAS4_DEVEL="192.168.14.251"
+
+# IP de acceso VPN a Eibar
+readonly IP_OTRAEMPRESAMAS4_VPN="192.168.16.31"
+readonly ACCESO_WS_PORT="3355"
+readonly TABLON_ANUNCIOS_PORT="3356"
+readonly OCSP_PORTS="8093 8094"
+readonly APP_SERV_PORTS="8443"
+
+# IP de acceso a los routers GSM
+readonly GSM_GETAFE="192.168.14.11"
+readonly IP_CENTRALITA="222.333.105.173"
+
+# IPs privadas de servidores de IASAP oc, db y river
+readonly IP_IASAP_OC_DEMO=192.168.14.26  # Direccion IP para la maquina virtual iasap-oc-demo
+readonly IP_IASAP_DB_DEMO=192.168.14.25  # Direccion IP para la maquina virtual iasap-db-demo
+readonly IP_IASAP_RIVER_DEMO=192.168.14.24  # Direccion IP para la maquina virtual iasap-river-demo
+
+# IPs de clientes que se conectan a los servidores de IASAP oc, db y river
+readonly IP_IASAP_SSH=( '222.333.4.20' '222.333.254.243' '222.333.152.135' '222.333.2.173' )
+
+# IP de github
+readonly IP_GITHUB=222.333.227.239
+
+# IP de paypal-devel
+readonly IP_PAYPALDEVEL_CHECKOUT=192.168.7.38
+#
+# Utilizo syslog para dejar constancia de la activación
+#
+if [ -x $LOGGER ]; then
+	$LOGGER -p notice "Activando enrutado y cortafuegos"
+fi
+#
+# Se mantiene activado el enrutamiento (requerimiento de las reglas de "bridging")
+#
+echo "1" > /proc/sys/net/ipv4/ip_forward
+#
+# Me aseguro de comenzar con un entorno "limpio"
+#
+# Se establece la política por defecto
+	$IPTABLES -P INPUT DROP
+	$IPTABLES -P OUTPUT DROP
+	$IPTABLES -P FORWARD DROP
+# Se "vacían" las reglas
+	$IPTABLES -F
+	$IPTABLES -t nat -F
+	$IPTABLES -t mangle -F
+# Borramos las reglas que pudieran haberse añadido
+	$IPTABLES -X
+	$IPTABLES -t nat -X
+	$IPTABLES -t mangle -X
+#
+# Configuro unos cuantos parámetros interesantes del kernel
+#
+echo "1" > /proc/sys/net/ipv4/conf/all/rp_filter
+echo "1" > /proc/sys/net/ipv4/icmp_ignore_bogus_error_responses
+echo "30" > /proc/sys/net/ipv4/tcp_fin_timeout
+echo "600" > /proc/sys/net/ipv4/tcp_keepalive_intvl
+echo "900" > /proc/sys/net/ipv4/tcp_keepalive_time
+# El "cable" en eth0 (LAN) comparte varias redes IP por motivos históricos; esto da problemas a los equipos en él: forzamos el enrutamiento "ocultando" que, en realidad, están en el mismo cable
+echo "0" > /proc/sys/net/ipv4/conf/eth0/send_redirects
+echo "0" > /proc/sys/net/ipv4/conf/eth0/shared_media
+echo "0" > /proc/sys/net/ipv4/conf/eth0/secure_redirects
+#
+# Cargamos módulos necesarios del kernel
+#
+$MODPROBE ip-nat-sip                               # "nateo" de las conexiones VoIP desde clientes en la VPN
+$MODPROBE ip-conntrack-amanda master_timeout=3600  #-
+$MODPROBE ip-nat-amanda                            # Conexiones para el servicio de copia de seguridad
+$MODPROBE nf-conntrack-tftp                        # Servicio TFTP (para arranque remoto con PXE)
+#
+# No nos vamos a fiar de paquetes con flags extraños que vengan de la calle: pueden ser usados en un DoS
+#
+
+
+$IPTABLES -N flags
+$IPTABLES -A flags -p tcp --tcp-flags ALL FIN,URG,PSH -j DROP
+$IPTABLES -A flags -p tcp --tcp-flags ALL ALL -j DROP
+$IPTABLES -A flags -p tcp --tcp-flags ALL SYN,RST,ACK,FIN,URG -j DROP
+$IPTABLES -A flags -p tcp --tcp-flags ALL NONE -j DROP
+$IPTABLES -A flags -p tcp --tcp-flags SYN,RST SYN,RST -j DROP
+$IPTABLES -A flags -p tcp --tcp-flags SYN,FIN SYN,FIN -j DROP
+	$IPTABLES -A INPUT -i ${ETH_WAN} -j flags
+	$IPTABLES -A FORWARD -i ${ETH_WAN} -j flags
+#
+# Reglas de control anti ip-spoofing
+#
+
+$IPTABLES -A INPUT -s ${NET_LOCALHOST} ! -i lo -j DROP
+$IPTABLES -A FORWARD -s ${NET_OPENVPN} ! -i ${TUN_VPN} -j DROP
+$IPTABLES -A FORWARD -s ${NET_OPENVPN_TCP} ! -i ${TUN_VPN_TCP} -j DROP
+for NET in ${NET_SCREENED} ${NET_TELEFONIA} ${NET_WIFI} ${NET_LAN} ${NET_OPENSTACK}; do
+	$IPTABLES -A INPUT -s ${NET} -i ${ETH_WAN} -j DROP
+	$IPTABLES -A FORWARD -s ${NET} -i ${ETH_WAN} -j DROP
+done
+$IPTABLES -A INPUT -s ${NET_SERVIDORES} ! -i ${ETH_SERVIDORES} -j DROP
+$IPTABLES -A FORWARD -s ${NET_SERVIDORES} ! -i ${ETH_SERVIDORES} -j DROP
+
+#--
+# COMIENZAN LAS REGLAS DE FILTRADO
+#--
+#
+# Se rechazan los paquetes inválidos
+#
+$IPTABLES -A INPUT -m state --state INVALID -j DROP
+$IPTABLES -A FORWARD -m state --state INVALID -j DROP
+#
+# Una vez iniciado el tráfico, se permite continuar (esta regla se coloca al principio por eficiencia: la mayoría de los paquetes la cumplirán)
+#
+$IPTABLES -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+$IPTABLES -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+$IPTABLES -A FORWARD -m state --state ESTABLISHED,RELATED -j ACCEPT
+
+#--
+# NECESIDADES DE SERVICIO DEL PROPIO CORTAFUEGOS
+#--
+#
+# Se permite todo el tráfico en el loopback
+#
+$IPTABLES -A INPUT -i lo -j ACCEPT
+$IPTABLES -A OUTPUT -o lo -j ACCEPT
+#
+# Acceso a DNSs (tanto públicos en Internet, como nuestro interno)
+#
+$IPTABLES -A OUTPUT -p tcp --destination-port 53 -m state --state NEW -j ACCEPT
+$IPTABLES -A OUTPUT -p udp --destination-port 53 -j ACCEPT
+#
+# Acceso a servidores NTP en Internet (esta máquina es el servidor NTP de nuestras redes)
+#
+$IPTABLES -A OUTPUT -p udp -o ${ETH_WAN} --destination-port 123 -m state --state NEW -j ACCEPT
+
+### Añadido para aceptar tráfico http y https saliente hacia OffiServ, servicio de reserva de recursos
+$IPTABLES -A OUTPUT -p tcp -o ${ETH_WAN} --destination-port 80 -m state --state NEW -j ACCEPT
+$IPTABLES -A OUTPUT -p tcp -o ${ETH_WAN} --destination-port 443 -m state --state NEW -j ACCEPT
+###
+
+#
+# Acceso al servidor SMTP de empresa
+#
+$IPTABLES -A OUTPUT -p tcp -d ${IP_SMTP} --destination-port 25 -m state --state NEW -j ACCEPT
+#
+# Acceso a servicios de actualización y proxy-caché (web, rsync, etc.)
+#
+$IPTABLES -A INPUT -p tcp -i ${ETH_WAN} -s ${NET_DMZ} -d ${IP_WAN} --dport ${PUERTO_APT} -m state --state NEW -j ACCEPT
+$IPTABLES -A OUTPUT -p tcp -o ${ETH_SERVIDORES} -d ${IP_APT} --destination-port ${PUERTO_APT} -m state --state NEW -j ACCEPT
+
+#
+# Acceso al servicio de DHCP
+#
+$IPTABLES  -I OUTPUT -o ${ETH_SERVIDORES} -p udp --dport 67:68 --sport 67:68 -j ACCEPT
+
+# Acceso a Tomcat en portátil de desarrollador
+$IPTABLES  -I OUTPUT -d ${IP_TOUROXP_CHECKOUT} -o ${ETH_LAN} -p tcp --dport 8009 -j ACCEPT
+
+# Acceso a JBoss en ordenador de desarrollador
+$IPTABLES  -I OUTPUT -d ${IP_PAYPALDEVEL_CHECKOUT} -o ${ETH_LAN} -p tcp --dport 8009 -j ACCEPT
+
+#--
+# SERVICIOS OFRECIDOS POR EL PROPIO EQUIPO
+#--
+#
+# Permitimos accesos SSH a la máquina desde las redes internas
+#
+$IPTABLES -A INPUT -p tcp -s ${NET_LAN} --destination-port 22 -m state --state NEW -j ACCEPT
+$IPTABLES -A INPUT -p tcp -s ${NET_WIFI} --destination-port 22 -m state --state NEW -j ACCEPT
+$IPTABLES -A INPUT -p tcp -s ${NET_SERVIDORES} --destination-port 22 -m state --state NEW -j ACCEPT
+$IPTABLES -A INPUT -p tcp -i ${TUN_VPN} -s ${NET_OPENVPN} --dport 22 -j ACCEPT
+$IPTABLES -A INPUT -p tcp -i ${TUN_VPN_TCP} -s ${NET_OPENVPN_TCP} --dport 22 -j ACCEPT
+$IPTABLES -A INPUT -p tcp -s ${NET_ZAMUDIO} --destination-port 22 -m state --state NEW -j ACCEPT
+$IPTABLES -A INPUT -p tcp -s ${NET_PANAMA_SERVERS} --destination-port 22 -m state --state NEW -j ACCEPT
+$IPTABLES -A INPUT -p tcp -s ${NET_PANAMA_PCS} --destination-port 22 -m state --state NEW -j ACCEPT
+#
+# Se aceptan paquetes ICMP desde las redes internas
+#
+$IPTABLES -A INPUT -p icmp -s ${NET_LAN} -j ACCEPT
+$IPTABLES -A INPUT -p icmp -s ${NET_WIFI} -j ACCEPT
+$IPTABLES -A INPUT -p icmp -s ${NET_SERVIDORES} -j ACCEPT
+$IPTABLES -A INPUT -p icmp -s ${NET_OPENVPN} -j ACCEPT
+#
+# Este equipo es el servidor NTP de nuestras redes internas
+#
+for NET in ${NET_LAN} ${NET_WIFI} ${NET_SERVIDORES} ${NET_SCREENED} ${NET_TELEFONIA} ${NET_ZAMUDIO} ${NET_PANAMA_SERVERS} ${NET_PANAMA_PCS} ${NET_OPENSTACK}; do
+	$IPTABLES -A INPUT -p udp -s ${NET} --destination-port 123 -j ACCEPT
+done
+#
+# Se aceptan conexiones NRPE (Nagios) desde la máquina de monitorización
+#
+$IPTABLES -A INPUT -p tcp -s ${IP_MONITOR} --destination-port ${PUERTO_NRPE} -j ACCEPT
+# Puertos de monitorización de las conexiones VPN
+$IPTABLES -A INPUT -p tcp -s ${IP_MONITOR} --destination-port 1190:1193 -j ACCEPT
+# (TEMPORAL) Se aceptan también desde el monitor en desarrollo
+$IPTABLES -A INPUT -p tcp -s ${IP_ORTHANC} --destination-port ${PUERTO_NRPE} -j ACCEPT
+$IPTABLES -A INPUT -p tcp -s ${IP_ORTHANC} --destination-port ${PUERTO_NSCA} -j ACCEPT
+$IPTABLES -A INPUT -p tcp -s ${IP_ORTHANC} --destination-port 1190:1193 -j ACCEPT
+#
+# Se aceptan conexiones de Amanda desde el servidor de copias de seguridad
+#
+$IPTABLES -A INPUT -p udp -m udp -s ${IP_AMANDA} --destination-port 10080 -j ACCEPT
+#
+# Se aceptan conexiones desde otraempresamas5 (¿seguro que esta regla es necesaria?)
+# Teniendo IP una pata dentro y otra fuera no lo creo. ¿Es necesario otraempresamas5?
+# Para el MOP no se usa y para OtroSitio habría que preguntar
+#
+#$IPTABLES -A INPUT -p tcp -i ${ETH_WAN} -s ${IP_OTRAEMPRESAMAS5} -d ${IP_WAN} -j ACCEPT
+#$IPTABLES -A INPUT -s ${IP_OTRAEMPRESAMAS5} -j ACCEPT
+#$IPTABLES -A FORWARD -s ${IP_OTRAEMPRESAMAS5} -j ACCEPT
+#
+# Puertos abiertos para redirecciones de Apache a sitios web internos
+#
+$IPTABLES -A INPUT -p tcp -d ${IP_WAN} -m multiport --destination-ports 80,443,8042,8080,8180,8181,8543,9000,9043,9080,9181,9090,9100 -m state --state NEW -j ACCEPT
+# Estas reglas SON MUY PELIGROSAS: debería limitarse el acceso a una DMZ sin conexión con las redes internas
+$IPTABLES -A OUTPUT -p tcp -o ${ETH_SERVIDORES} -d ${NET_SERVIDORES} -m multiport --destination-ports 80,443,8042,8080,8180,8181,8543,9000,9043,9080,9181,9090,9100,8009 -m state --state NEW -j ACCEPT
+$IPTABLES -A OUTPUT -p tcp -o ${ETH_SCREENED} -d ${NET_SCREENED} -m multiport --destination-ports 80,443,8042,8080,8180,8181,8543,9000,9043,9080,9181,9090,9100,8009 -m state --state NEW -j ACCEPT
+# También se da acceso a Servitux a la interfaz de gestión web de la centralita
+# Buscar en la sección de "redirecciones" el acceso SSH
+$IPTABLES -A OUTPUT -p tcp -o ${ETH_LAN} -d ${IP_VOIP} --destination-port 80 -j ACCEPT
+#
+# Servicio de aplicaciones web Java
+#
+# Se permite el acceso al balanceador de aplicaciones en la dirección IP para servicios web
+$IPTABLES -A INPUT -p tcp -d ${IP_WAN_WEBSERVICES} -m multiport --destination-ports 80,443,1443,9000,9043 -m state --state NEW -j ACCEPT
+# Acceso a servidores de aplicaciones Java internos
+$IPTABLES -A OUTPUT -p tcp -o ${ETH_SERVIDORES} -d ${NET_SERVIDORES} --destination-port 8009 -m state --state NEW -j ACCEPT
+#
+# Relay del servicio DHCP
+#
+$IPTABLES  -I INPUT -i ${ETH_LAN} -p udp --dport 67:68 --sport 67:68 -j ACCEPT
+$IPTABLES  -I INPUT -i ${ETH_SCREENED} -p udp --dport 67:68 --sport 67:68 -j ACCEPT
+#
+# Servicio de webmail
+#
+# Se permite el acceso al balanceador de aplicaciones en la dirección IP para servicios webmail
+$IPTABLES -A INPUT -p tcp -d ${IP_WAN_WEBMAIL} -m multiport --destination-ports 80,443 -m state --state NEW -j ACCEPT
+
+#--
+# REGLAS DE ENMASCARAMIENTO/FIREWALLING
+#--
+#
+# Se permite el acceso "transparente" a nuestro pool público
+#
+$IPTABLES -A FORWARD -s ${NET_DMZ} -j ACCEPT
+$IPTABLES -A FORWARD -d ${NET_DMZ} -j ACCEPT
+#
+# Enmascaramientos específicos
+#
+# enmascaramiento saliente del mailhub corporativo
+# NOTA: La redirección de puertos se realiza más abajo, en la sección correspondiente
+$IPTABLES -t nat -A POSTROUTING -o ${ETH_WAN} -s ${IP_MAILHUB} -j SNAT --to ${IP_WAN_MAILHUB}
+# enmascaramiento saliente del DNS corporativo
+# NOTA: La redirección de puertos se realiza más abajo, en la sección correspondiente
+$IPTABLES -t nat -A POSTROUTING -o ${ETH_WAN} -s ${IP_DNSPUBLICO1} -j SNAT --to ${IP_WAN_NS1}
+$IPTABLES -t nat -A POSTROUTING -o ${ETH_WAN} -s ${IP_DNSPUBLICO2} -j SNAT --to ${IP_WAN_NS2}
+
+$IPTABLES -t nat -A POSTROUTING -o ${ETH_WAN} -s ${IP_CLAVE} -j SNAT --to ${IP_WAN_REDIR_IPT}
+
+#
+# Enmascaramiento básico de las redes interiores para el acceso a correo y ntp como mínimo
+#
+for NET in ${NET_LAN} ${NET_WIFI} ${NET_SERVIDORES} ${NET_SCREENED} ${NET_TELEFONIA} ${NET_OPENVPN} ${NET_OPENVPN_SEDES} ${NET_OPENVPN_SEDE_PANAMA} ${NET_OPENSTACK}; do
+	$IPTABLES -t nat -A POSTROUTING -o ${ETH_WAN} -s ${NET} -j SNAT --to ${IP_WAN_MADRID}
+done
+#
+# La política por defecto es fiarnos de la red interna y permitir todo su tráfico saliente
+# Sin embargo, puede haber en ella máquinas Windows, cosa que hay que tener en cuenta
+#
+$IPTABLES -N antiwin
+# Filtramos el tráfico SMB/CIFS
+$IPTABLES -A antiwin -p tcp -o ${ETH_WAN} --destination-port 135:139 -j REJECT
+$IPTABLES -A antiwin -p tcp -o ${ETH_WAN} --destination-port 445 -j REJECT
+$IPTABLES -A antiwin -p udp -o ${ETH_WAN} --destination-port 135:139 -j REJECT
+$IPTABLES -A antiwin -p udp -o ${ETH_WAN} --destination-port 445 -j REJECT
+# ...y también el tráfico SMTP hacia Internet, (se permite sólo a nuestra red de servidores)
+$IPTABLES -A antiwin -o ${ETH_WAN} -p tcp --destination-port 25 -j REJECT
+# Aplicamos la regla a las redes con posibles equipos Windows
+for NET in ${NET_LAN} ${NET_WIFI} ${NET_OPENVPN} ${NET_OPENVPN_TCP} ${NET_OPENVPN_SEDES} ${NET_OPENVPN_SEDE_PANAMA}; do
+	$IPTABLES -A FORWARD -s ${NET} -j antiwin
+done
+#
+# Gestión de las conexiones de OpenVPN
+#
+# Túneles OpenVPN para el acceso remoto a la Intranet
+$IPTABLES -A INPUT -p udp -d ${IP_WAN} --dport ${PUERTO_VPN} -j ACCEPT
+$IPTABLES -A INPUT -p tcp -d ${IP_WAN} --dport ${PUERTO_VPN} -j ACCEPT
+$IPTABLES -A INPUT -p tcp -d ${IP_WAN_VPN} --dport ${PUERTO_VPN_TEST} -j ACCEPT
+$IPTABLES -A INPUT -p udp -d ${IP_WAN_VPN} --dport ${PUERTO_VPN_SEDES} -j ACCEPT
+$IPTABLES -A INPUT -p udp -d ${IP_WAN_VPN} --dport ${PUERTO_VPN_SEDE_PANAMA} -j ACCEPT
+$IPTABLES -A INPUT -p udp -d ${IP_SOPORTE} --dport ${PUERTO_VPN} -j ACCEPT
+$IPTABLES -A INPUT -p udp -d ${IP_SOPORTE} --dport ${PUERTO_VPN_SOPORTE_ELCLIENTE} -j ACCEPT
+
+# Enmascaramiento de las conexiones VPN
+# Los clientes de soporte no necesitan un "conocimiento íntimo" de nuestra topología interna
+$IPTABLES -t nat -A POSTROUTING -s ${NET_OPENVPN} -o ${TUN_VPN_SOPORTE} -j SNAT --to ${IP_LAN}
+$IPTABLES -t nat -A POSTROUTING -s ${NET_OPENVPN} -o ${TUN_VPN_SOPORTE_ELCLIENTE} -j SNAT --to ${IP_LAN}
+#
+# Conexiones VPN con acceso restringido
+#
+# De momento vamos a permitir todo el tráfico en la red de soportes (túnel en desarrollo)
+	$IPTABLES -A INPUT -i ${TUN_VPN_SOPORTE} -j ACCEPT
+	$IPTABLES -A OUTPUT -o ${TUN_VPN_SOPORTE} -j ACCEPT
+	$IPTABLES -A FORWARD -i ${TUN_VPN_SOPORTE} -j ACCEPT
+	$IPTABLES -A FORWARD -o ${TUN_VPN_SOPORTE} -j ACCEPT
+# También en la red de soporte para El Cliente
+	$IPTABLES -A INPUT -i ${TUN_VPN_SOPORTE_ELCLIENTE} -j ACCEPT
+	$IPTABLES -A OUTPUT -o ${TUN_VPN_SOPORTE_ELCLIENTE} -j ACCEPT
+	$IPTABLES -A FORWARD -i ${TUN_VPN_SOPORTE_ELCLIENTE} -j ACCEPT
+	$IPTABLES -A FORWARD -o ${TUN_VPN_SOPORTE_ELCLIENTE} -j ACCEPT
+
+# Acceso limitado a recursos del proyecto de proyectox cuya máquina se encuentra en la red 14
+$IPTABLES -N proyectox
+# Resolución DNS interna
+	$IPTABLES -A proyectox -p tcp -d ${IP_DNSINTERNO} --dport 53 -m state --state NEW -j ACCEPT
+	$IPTABLES -A proyectox -p udp -d ${IP_DNSINTERNO} --dport 53 -j ACCEPT
+# Proyecto Libre Geo Social (en principio, activo hasta JUL/2010)
+	$IPTABLES -A proyectox -p icmp -d ${IP_OTRAEMPRESA_PROYECTOX} -j ACCEPT
+	$IPTABLES -A proyectox -p tcp -d ${IP_OTRAEMPRESA_PROYECTOX} -m multiport --destination-ports 22,80,443 -m state --state NEW -j ACCEPT
+# Rechazar todo lo demás
+	$IPTABLES -A proyectox -p all -m state --state NEW -j DROP
+# Se aplican las reglas
+for dirip in ${VPN_PROYECTOX[@]}; do
+	$IPTABLES -A INPUT -s ${dirip} -j proyectox
+	$IPTABLES -A FORWARD -s ${dirip} -j proyectox
+done
+
+# Acceso limitado a recursos del proyecto de EMPRESA_CRM_PRE
+$IPTABLES -N empresa_crm_pre
+# Resolución DNS interna
+$IPTABLES -A empresa_crm_pre -p tcp -d ${IP_DNSINTERNO} --dport 53 -m state --state NEW -j ACCEPT
+$IPTABLES -A empresa_crm_pre -p udp -d ${IP_DNSINTERNO} --dport 53 -j ACCEPT
+# Por cada máquina asignada al proyecto
+for ipaddr in ${IP_EMPRESA_CRM_PRE[@]}; do
+	# Proyecto EMPRESA_CRM_PRE
+	$IPTABLES -A empresa_crm_pre -p icmp -d ${ipaddr} -j ACCEPT
+	$IPTABLES -A empresa_crm_pre -p tcp -d ${ipaddr} -m multiport --destination-ports 22,80,443 -m state --state NEW -j ACCEPT
+	# Rechazar todo lo demás
+	$IPTABLES -A empresa_crm_pre -p all -m state --state NEW -j DROP
+done
+# Se aplican las reglas a cada cliente
+for ipaddr in ${VPN_EMPRESA_CRM_PRE[@]}; do
+	$IPTABLES -A INPUT -s ${ipaddr} -j empresa_crm_pre
+	$IPTABLES -A FORWARD -s ${ipaddr} -j empresa_crm_pre
+done
+
+
+#--
+# REDIRECCIONES DE SERVICIO (por orden alfabético)
+#--
+#
+# CENTRALITA VoIP
+#
+# Protocolo IAX2
+$IPTABLES -t nat -A PREROUTING -d ${IP_WAN} -p udp --dport ${PUERTO_VOIP} -j DNAT --to-destination ${IP_VOIP}:${PUERTO_VOIP}
+$IPTABLES -t nat -A POSTROUTING -p udp -d ${IP_VOIP} --dport ${PUERTO_VOIP} -j SNAT --to ${IP_LAN}
+# Protocolo SIP (no está en uso)
+#$IPTABLES -A PREROUTING -t nat -v -d ${IP_WAN} -p udp --dport 5060 -j DNAT --to-destination ${IP_VOIP}:5060
+#$IPTABLES -v -t nat -A POSTROUTING -p udp -d ${IP_VOIP} --dport 5060 -j SNAT --to ${IP_LAN}
+# Acceso SSH de Servitux (ver en la sección de servicios de redirección de Apache el acceso a la consola de gestión)
+$IPTABLES -A PREROUTING -t nat -p tcp -s ${IP_SERVITUX} --dport 22 -j DNAT --to-destination ${IP_VOIP}
+$IPTABLES -A FORWARD -p tcp -s ${IP_SERVITUX} -d ${IP_VOIP} --dport 22 -j ACCEPT
+#
+# CORREO CORPORATIVO
+#
+# redirección entrante (el enmascaramiento saliente a la IP específica se lleva a cabo más arriba, en la sección correspondiente)
+$IPTABLES -t nat -A PREROUTING -i ${ETH_WAN} -d ${IP_WAN_MAILHUB} -p tcp -m multiport --destination-ports 25,110,143,465,995,993 -j DNAT --to-destination ${IP_MAILHUB}
+$IPTABLES -A FORWARD -p tcp -i ${ETH_WAN} -d ${IP_MAILHUB} -m multiport --destination-ports 25,110,143,465,995,993 -j ACCEPT
+#
+# DNS CORPORATIVO
+#
+# DNS1
+$IPTABLES -t nat -A PREROUTING -i ${ETH_WAN} -d ${IP_WAN_NS1} -p tcp --dport 53 -j DNAT --to-destination ${IP_DNSPUBLICO1}
+$IPTABLES -t nat -A PREROUTING -i ${ETH_WAN} -d ${IP_WAN_NS1} -p udp --dport 53 -j DNAT --to-destination ${IP_DNSPUBLICO1}
+$IPTABLES -A FORWARD -i ${ETH_WAN} -d ${IP_DNSPUBLICO1} -p tcp --dport 53 -j ACCEPT
+$IPTABLES -A FORWARD -i ${ETH_WAN} -d ${IP_DNSPUBLICO1} -p udp --dport 53 -j ACCEPT
+
+# DNS2
+$IPTABLES -t nat -A PREROUTING -i ${ETH_WAN} -d ${IP_WAN_NS2} -p tcp --dport 53 -j DNAT --to-destination ${IP_DNSPUBLICO2}
+$IPTABLES -t nat -A PREROUTING -i ${ETH_WAN} -d ${IP_WAN_NS2} -p udp --dport 53 -j DNAT --to-destination ${IP_DNSPUBLICO2}
+$IPTABLES -A FORWARD -i ${ETH_WAN} -d ${IP_DNSPUBLICO2} -p tcp --dport 53 -j ACCEPT
+$IPTABLES -A FORWARD -i ${ETH_WAN} -d ${IP_DNSPUBLICO2} -p udp --dport 53 -j ACCEPT
+#
+# TELEFONIA
+# Permitimos el paso de los paquetes a la red de telefon?a de zona2 a trav?s del tunel contra Panamá
+for NET in ${NET_LAN} ${NET_WIFI} ${NET_SERVIDORES} ${NET_SCREENED} ${NET_TELEFONIA} ${NET_OPENVPN} ${NET_OPENVPN_SEDES} ${NET_OPENSTACK}; do
+	$IPTABLES -I FORWARD -s ${NET} -d ${NET_PANAMA_PHONES} -o ${TUN_VPN_SEDE_PANAMA} -j ACCEPT
+done
+#--
+# ASUNTOS TEMPORALES (si resultan de utilidad como ejemplo, pueden dejarse comentados después de utilizados)
+#--
+#
+# REDIRECCIÃ“N A UN SERVIDOR VNC
+# (necesario el 22-24/MAR/2007 para hacer una demo de Opencities en Argentina)
+#${IPTABLES} -t nat -A PREROUTING -p tcp -d ${IP_WAN} --dport 5900 -j DNAT --to-destination 192.168.7.24
+#${IPTABLES} -t nat -A POSTROUTING -p tcp -d 192.168.7.24 --dport 5900 -j SNAT --to ${IP_LAN}
+#
+# Puertos abiertos temporalmente para demo de Opencities-demo.
+#
+$IPTABLES -t nat -A PREROUTING -p tcp -d ${IP_WAN} --dport 19000 -j DNAT --to 192.168.17.22
+$IPTABLES -t nat -A POSTROUTING -p tcp -d 192.168.17.22 --dport 19000 -j SNAT --to ${IP_LAN}
+$IPTABLES -t nat -A PREROUTING -p tcp -d ${IP_WAN} --dport 19043 -j DNAT --to 192.168.17.22
+$IPTABLES -t nat -A POSTROUTING -p tcp -d 192.168.17.22 --dport 19043 -j SNAT --to ${IP_LAN}
+
+#--
+# TRÃFICO SALIENTE
+#--
+#
+# Para la red de telefonía dejamos pasar consultas DNS
+#
+$IPTABLES -A FORWARD -s ${NET_TELEFONIA} -m state -p tcp --dport 53 -d ${IP_DNSINTERNO} --state NEW -j ACCEPT
+$IPTABLES -A FORWARD -s ${NET_TELEFONIA} -m state -p udp --dport 53 -d ${IP_DNSINTERNO} --state NEW -j ACCEPT
+#
+# Para la red SCREENED dejamos pasar DNS, APT, SMTP, NTP, TFTP HTTP(S), SSH e ICMP
+#
+$IPTABLES -A FORWARD -s ${NET_SCREENED} -m state -p udp --dport ${PUERTO_AMANDA} -d ${IP_AMANDA} --state NEW -j ACCEPT
+$IPTABLES -A FORWARD -s ${NET_SCREENED} -m state -p tcp --dport ${PUERTO_APT} -d ${IP_APT} --state NEW -j ACCEPT
+$IPTABLES -A FORWARD -s ${NET_SCREENED} -m state -p tcp --dport 53 -d ${IP_DNSINTERNO} --state NEW -j ACCEPT
+$IPTABLES -A FORWARD -s ${NET_SCREENED} -m state -p udp --dport 53 -d ${IP_DNSINTERNO} --state NEW -j ACCEPT
+# REVISAR: El servidor de correo a utilizar debería ser, probablemente, MTATRANSPORT (pero aún me lo tengo que pensar)
+$IPTABLES -A FORWARD -s ${NET_SCREENED} -m state -p tcp --dport 25 -d ${IP_SMTP} --state NEW -j ACCEPT
+$IPTABLES -A FORWARD -s ${NET_SCREENED} -p udp -d ${IP_TFTPSERVER} --dport 69 -j ACCEPT
+$IPTABLES -A FORWARD -p tcp -s ${NET_SCREENED} -m multiport --destination-ports 80,443 -m state --state NEW -j ACCEPT
+$IPTABLES -A FORWARD -p icmp -s ${NET_SCREENED} -j ACCEPT
+#
+# Para la red OPENSTACK dejamos pasar DNS, APT, SMTP, NTP, TFTP HTTP(S), SSH e ICMP
+#
+$IPTABLES -A FORWARD -s ${NET_OPENSTACK} -m state -p udp --dport ${PUERTO_AMANDA} -d ${IP_AMANDA} --state NEW -j ACCEPT
+$IPTABLES -A FORWARD -s ${NET_OPENSTACK} -m state -p tcp --dport ${PUERTO_APT} -d ${IP_APT} --state NEW -j ACCEPT
+$IPTABLES -A FORWARD -s ${NET_OPENSTACK} -m state -p tcp --dport 53 -d ${IP_DNSINTERNO} --state NEW -j ACCEPT
+$IPTABLES -A FORWARD -s ${NET_OPENSTACK} -m state -p udp --dport 53 -d ${IP_DNSINTERNO} --state NEW -j ACCEPT
+# REVISAR: El servidor de correo a utilizar debería ser, probablemente, MTATRANSPORT (pero aún me lo tengo que pensar)
+$IPTABLES -A FORWARD -s ${NET_OPENSTACK} -m state -p tcp --dport 25 -d ${IP_SMTP} --state NEW -j ACCEPT
+$IPTABLES -A FORWARD -s ${NET_OPENSTACK} -p udp -d ${IP_TFTPSERVER} --dport 69 -j ACCEPT
+$IPTABLES -A FORWARD -p tcp -s ${NET_OPENSTACK} -m multiport --destination-ports 80,443 -m state --state NEW -j ACCEPT
+$IPTABLES -A FORWARD -p icmp -s ${NET_OPENSTACK} -j ACCEPT
+
+# Acceso libre para stackops.empresa.net hacia internet
+$IPTABLES -A FORWARD -s ${IP_STACKOPS} -m state -p tcp -o ${ETH_WAN} --state NEW -j ACCEPT
+$IPTABLES -A FORWARD -s ${IP_STACKOPS} -m state -p udp -o ${ETH_WAN} --state NEW -j ACCEPT
+# Acceso libre a github
+$IPTABLES -A FORWARD -s ${NET_SCREENED} -m state -p tcp -d ${IP_GITHUB} --state NEW -j ACCEPT
+
+# Acceso a oracle.empresa.net desde la red SCREENED
+$IPTABLES -A FORWARD -s ${NET_SCREENED} -m state -p tcp --dport ${PUERTO_ORACLE} -d ${IP_ORACLE} --state NEW -j ACCEPT
+# proyectos-01, en la red 14, servidor del piloto OpenQRM requiere acceso temporal a virtuales-07
+$IPTABLES -A FORWARD -s 192.168.14.2 -d 192.168.17.156 -m state --state NEW -j ACCEPT
+
+# También dejamos pasar las conexiones desde 192.168.14.251 a 192.168.16.31:3335 y 192.168.16.31:3336
+# Véase https://operaciones.empresa.com/arquitectura/trac/wiki/Proyecto_OpenCities_Otraempresamas4
+$IPTABLES -A FORWARD -s ${IP_OPENCITIES_OTRAEMPRESAMAS4_DEVEL} -m state -p tcp --dport $ACCESO_WS_PORT -d $IP_OTRAEMPRESAMAS4_VPN --state NEW -j ACCEPT
+$IPTABLES -A FORWARD -s ${IP_OPENCITIES_OTRAEMPRESAMAS4_DEVEL} -m state -p tcp --dport $TABLON_ANUNCIOS_PORT -d $IP_OTRAEMPRESAMAS4_VPN --state NEW -j ACCEPT
+for port in ${OCSP_PORTS}; do
+	$IPTABLES -A FORWARD -s ${IP_OPENCITIES_OTRAEMPRESAMAS4_DEVEL} -m state -p tcp --dport ${port} -o ${ETH_WAN}  --state NEW -j ACCEPT
+done
+$IPTABLES -A FORWARD -s ${IP_OPENCITIES_OTRAEMPRESAMAS4_DEVEL} -m state -p tcp --dport ${APP_SERV_PORTS} -o ${ETH_WAN}  --state NEW -j ACCEPT
+
+# Permitimos que portalcontur-demo haga peticiones al puerto 8080 de los servidores externos a nuestra red
+#
+$IPTABLES -A FORWARD -s ${IP_PORTALCONTUR} -m state -p tcp --dport 8080 --state NEW -j ACCEPT
+
+#
+# En el caso concreto del entorno de preproducción para el correo del
+# Ayuntamiento de otraempresamas2 permitimos el acceso a mail.otraempresamas2.es
+#
+$IPTABLES -A FORWARD -s ${IP_CORREO_OTRAEMPRESAMAS2_FRONTAL} -m state -p tcp -d ${IP_MAIL_OTRAEMPRESAMAS2_ES} --state NEW -j ACCEPT
+$IPTABLES -A FORWARD -s ${IP_CORREO_OTRAEMPRESAMAS2_BUZONES} -m state -p tcp -d ${IP_MAIL_OTRAEMPRESAMAS2_ES} --state NEW -j ACCEPT
+$IPTABLES -A FORWARD -s ${IP_CORREO_OTRAEMPRESAMAS2_CLIENTE} -m state -p tcp -d ${IP_MAIL_OTRAEMPRESAMAS2_ES} --state NEW -j ACCEPT
+###TEMPORAL###
+$IPTABLES -A FORWARD -s ${IP_OTRAEMPRESAMAS1} -m state -p tcp -d ${IP_MAIL_OTRAEMPRESAMAS2_ES} --state NEW -j ACCEPT
+
+#
+# Para el resto de redes permitimos todo el tráfico saliente
+#
+for NET in ${NET_OPENVPN} ${NET_OPENVPN_TCP} ${NET_OPENVPN_SEDES} ${NET_OPENVPN_SEDE_PANAMA} ${NET_LAN} ${NET_SERVIDORES} ${NET_WIFI} ${NET_ZAMUDIO} ${NET_PANAMA_SERVERS} ${NET_PANAMA_PCS} ${NET_TELEFONIA}; do
+	$IPTABLES -A FORWARD -s ${NET} -m state --state NEW -j ACCEPT
+done
+
+# Se permite acceso por NSCA al servidor de Nagios en Amazon 5667
+$IPTABLES -t nat -A POSTROUTING -o ${ETH_WAN} -s ${IP_ORTHANC} -j SNAT --to ${IP_WAN}
+$IPTABLES -t nat -A PREROUTING -i ${ETH_WAN} -d ${IP_WAN} -p tcp --dport ${PUERTO_NSCA} -j DNAT --to-destination ${IP_ORTHANC}
+$IPTABLES -A FORWARD -i ${ETH_WAN} -d ${IP_ORTHANC} -p tcp --dport ${PUERTO_NSCA} -j ACCEPT
+
+# Se permite acceso por ssh a proyectox-devel.empresa.com a través del puerto 22147
+$IPTABLES -t nat -A POSTROUTING -o ${ETH_WAN} -s ${IP_PROYECTOX} -j SNAT --to ${IP_WAN_REDIR_IPT}
+$IPTABLES -t nat -A PREROUTING -i ${ETH_WAN} -d ${IP_WAN_REDIR_IPT} -p tcp --dport 22147 -j DNAT --to-destination ${IP_PROYECTOX}:22
+$IPTABLES -A FORWARD -i ${ETH_WAN} -d ${IP_PROYECTOX} -p tcp --dport 22 -j ACCEPT
+
+# otraempresamas1: Acceso ssh
+$IPTABLES -A FORWARD -i ${ETH_WAN} -d ${IP_OTRAEMPRESAMAS1} -p tcp --dport 22 -j ACCEPT
+for ipaddr in ${IP_CSNTN_SSH[@]}; do
+    # Se permite acceso por ssh a otraempresamas1-devel.empresa.com a través del puerto 22146
+    $IPTABLES -t nat -A POSTROUTING -o ${ETH_WAN} -s ${IP_OTRAEMPRESAMAS1} -j SNAT --to ${IP_WAN_WEBSERVICES}
+    $IPTABLES -t nat -A PREROUTING -i ${ETH_WAN} -s ${ipaddr} -d ${IP_WAN_WEBSERVICES} -p tcp --dport 22146 -j DNAT --to-destination ${IP_OTRAEMPRESAMAS1}:22
+done
+
+# OpenCitizen devel: Acceso SIP 5060 y 10000:20000
+$IPTABLES -A FORWARD -i ${ETH_WAN} -d ${IP_OZ_DEVEL} -p udp --dport 5060 -j ACCEPT
+$IPTABLES -A FORWARD -i ${ETH_WAN} -d ${IP_OZ_DEVEL} -p udp --dport 10000:20000 -j ACCEPT
+$IPTABLES -t nat -A POSTROUTING -o ${ETH_WAN} -s ${IP_OZ_DEVEL} -j SNAT --to ${IP_WAN_WEBSERVICES}
+$IPTABLES -t nat -A PREROUTING -i ${ETH_WAN} -d ${IP_WAN_WEBSERVICES} -p udp --dport 5060 -j DNAT --to-destination ${IP_OZ_DEVEL}:5060
+$IPTABLES -t nat -A PREROUTING -i ${ETH_WAN} -d ${IP_WAN_WEBSERVICES} -p udp --dport 10000:20000 -j DNAT --to-destination ${IP_OZ_DEVEL}:10000-20000
+
+# OpenCitizen devel: Acceso ssh
+$IPTABLES -A FORWARD -i ${ETH_WAN} -d ${IP_OZ_DEVEL} -p tcp --dport 22 -j ACCEPT
+for ipaddr in ${IP_OZ_DEVEL_SSH[@]}; do
+    # Se permite acceso por ssh a oz-devel.empresa.com a través del puerto 22153
+    $IPTABLES -t nat -A POSTROUTING -o ${ETH_WAN} -s ${IP_OZ_DEVEL} -j SNAT --to ${IP_WAN_WEBSERVICES}
+    $IPTABLES -t nat -A PREROUTING -i ${ETH_WAN} -s ${ipaddr} -d ${IP_WAN_WEBSERVICES} -p tcp --dport 22153 -j DNAT --to-destination ${IP_OZ_DEVEL}:22
+done
+
+# Tourexp: Acceso ssh
+$IPTABLES -A FORWARD -i ${ETH_WAN} -d ${IP_TOUREXP_DEVEL} -p tcp --dport 22 -j ACCEPT
+$IPTABLES -A FORWARD -i ${ETH_WAN} -d ${IP_TOUREXP_DEMO} -p tcp --dport 22 -j ACCEPT
+for ipaddr in ${IP_TOUREXP_SSH[@]}; do
+    # Se permite acceso por ssh a tourexp-devel.empresa.com a través del puerto 22151
+    # Se permite acceso por ssh a tourexp-demo.empresa.com a través del puerto 22152
+    $IPTABLES -t nat -A POSTROUTING -o ${ETH_WAN} -s ${IP_TOUREXP_DEVEL} -j SNAT --to ${IP_WAN_WEBSERVICES}
+    $IPTABLES -t nat -A POSTROUTING -o ${ETH_WAN} -s ${IP_TOUREXP_DEMO} -j SNAT --to ${IP_WAN_WEBSERVICES}
+    $IPTABLES -t nat -A PREROUTING -i ${ETH_WAN} -s ${ipaddr} -d ${IP_WAN_WEBSERVICES} -p tcp --dport 22151 -j DNAT --to-destination ${IP_TOUREXP_DEVEL}:22
+    $IPTABLES -t nat -A PREROUTING -i ${ETH_WAN} -s ${ipaddr} -d ${IP_WAN_WEBSERVICES} -p tcp --dport 22152 -j DNAT --to-destination ${IP_TOUREXP_DEMO}:22
+done
+
+# Tourexp: Acceso PostgreSQL
+$IPTABLES -A FORWARD -i ${ETH_WAN} -d ${IP_TOUREXP_DEVEL} -p tcp --dport 5432 -j ACCEPT
+$IPTABLES -A FORWARD -i ${ETH_WAN} -d ${IP_TOUREXP_DEMO} -p tcp --dport 5432 -j ACCEPT
+for ipaddr in ${IP_TOUREXP_POSTGRES[@]}; do
+    $IPTABLES -t nat -A PREROUTING -i ${ETH_WAN} -s ${ipaddr} -d ${IP_WAN_WEBSERVICES} -p tcp --dport 55432 -j DNAT --to-destination ${IP_TOUREXP_DEVEL}:5432
+    $IPTABLES -t nat -A PREROUTING -i ${ETH_WAN} -s ${ipaddr} -d ${IP_WAN_WEBSERVICES} -p tcp --dport 55433 -j DNAT --to-destination ${IP_TOUREXP_DEMO}:5432
+done
+
+# Portalcontur: Acceso ssh
+$IPTABLES -A FORWARD -i ${ETH_WAN} -d ${IP_PORTALCONTUR} -p tcp --dport 22 -j ACCEPT
+for ipaddr in ${IP_PORTALCONTUR_DEMO_SSH[@]}; do
+    # Se permite acceso por ssh a portalcontur-demo.empresa.com a través del puerto 22155
+	$IPTABLES -t nat -A PREROUTING -i ${ETH_WAN} -s ${ipaddr} -d ${IP_WAN_WEBSERVICES} -p tcp --dport 22155 -j DNAT --to-destination ${IP_PORTALCONTUR}:22
+	$IPTABLES -t nat -A POSTROUTING -o ${ETH_WAN} -s ${IP_PORTALCONTUR} -j SNAT --to ${IP_WAN_WEBSERVICES}
+
+done
+# Acceso a westaticas desde fuera para ex-clave
+$IPTABLES -A FORWARD -i ${ETH_WAN} -d ${IP_WESTATICAS} -p tcp --dport 22 -j ACCEPT
+$IPTABLES -t nat -A PREROUTING -i ${ETH_WAN} -d ${IP_WAN_WEBSERVICES} -p tcp --dport 2222 -j DNAT --to-destination ${IP_WESTATICAS}:22
+$IPTABLES -t nat -A POSTROUTING -o ${ETH_WAN} -s ${IP_WESTATICAS} -j SNAT --to ${IP_WAN_WEBSERVICES}
+
+
+# Portalcontur: Acceso PostgreSQL
+$IPTABLES -A FORWARD -i ${ETH_WAN} -d ${IP_PORTALCONTUR} -p tcp --dport 5432 -j ACCEPT
+for ipaddr in ${IP_PORTALCONTUR_DEMO_POSTGRES[@]}; do
+    # Se permite acceso por mysql a portalcontur-demo.empresa.com a través del puerto 55434
+    $IPTABLES -t nat -A PREROUTING -i ${ETH_WAN} -s ${ipaddr} -d ${IP_WAN_WEBSERVICES} -p tcp --dport 55434 -j DNAT --to-destination ${IP_PORTALCONTUR}:5432
+done
+
+# Clean-demo: Acceso PostgreSQL
+$IPTABLES -A FORWARD -i ${ETH_WAN} -d ${IP_CLEAN_DEMO} -p tcp --dport 5432 -j ACCEPT
+for ipaddr in ${IP_CLEAN_DEMO_POSTGRES[@]}; do
+    # Se permite acceso por mysql a portalcontur-demo.empresa.com a través del puerto 55434
+    $IPTABLES -t nat -A PREROUTING -i ${ETH_WAN} -s ${ipaddr} -d ${IP_WAN_WEBSERVICES} -p tcp --dport 55435 -j DNAT --to-destination ${IP_CLEAN_DEMO}:5432
+done
+
+# Contur: Acceso ssh
+$IPTABLES -A FORWARD -i ${ETH_WAN} -d ${IP_CONTUR} -p tcp --dport 22 -j ACCEPT
+for ipaddr in ${IP_CONTUR_DEMO_SSH[@]}; do
+    # Se permite acceso por ssh a contur-demo.empresa.com a través del puerto 22156
+    $IPTABLES -t nat -A POSTROUTING -o ${ETH_WAN} -s ${IP_CONTUR} -j SNAT --to ${IP_WAN_WEBSERVICES}
+    $IPTABLES -t nat -A PREROUTING -i ${ETH_WAN} -s ${ipaddr} -d ${IP_WAN_WEBSERVICES} -p tcp --dport 22156 -j DNAT --to-destination ${IP_CONTUR}:22
+done
+
+# otraempresamas1: Acceso web
+#for ipaddr in ${IP_CSNTN_WEB[@]}; do
+#    # Se permite acceso por http y https a otraempresamas1-devel.empresa.com
+#    for puerto in 80 443; do
+#        $IPTABLES -t nat -A POSTROUTING -o ${ETH_WAN} -s ${IP_OTRAEMPRESAMAS1} -j SNAT --to ${IP_WAN_REDIR_IPT}
+#        $IPTABLES -t nat -A PREROUTING -i ${ETH_WAN} -s ${ipaddr} -d ${IP_WAN_REDIR_IPT} -p tcp --dport ${puerto} -j DNAT --to-destination ${IP_OTRAEMPRESAMAS1}
+#        $IPTABLES -A FORWARD -i ${ETH_WAN} -d ${IP_OTRAEMPRESAMAS1} -p tcp --dport ${puerto} -j ACCEPT
+#    done
+#done
+
+for puerto in 80 25 443 993 995 143 110; do
+  $IPTABLES -t nat -A PREROUTING -i ${ETH_WAN} -d ${IP_WAN_REDIR_IPT} -p tcp --dport ${puerto} -j DNAT --to-destination ${IP_CLAVE}
+  $IPTABLES -A FORWARD -i ${ETH_WAN} -d ${IP_CLAVE} -p tcp --dport ${puerto} -j ACCEPT
+done
+
+# TEMPORAL: redirección para pruebas de la web de empresa
+$IPTABLES -t nat -A PREROUTING -i ${ETH_WAN} -p tcp --dport 9000 -j DNAT --to-destination 192.168.17.250
+$IPTABLES -A FORWARD -i ${ETH_WAN} -p tcp --dport 9000 -j ACCEPT
+
+# Correo de otraempresamas2: Acceso ssh
+
+# Se permite acceso por ssh al entorno de preproducción de otraempresamas2 a través del puerto 22148 para el frontal y del 22149 para los buzones
+$IPTABLES -t nat -A PREROUTING -i ${ETH_WAN} -d ${IP_WAN_REDIR_IPT} -p tcp --dport 22148 -j DNAT --to-destination ${IP_CORREO_OTRAEMPRESAMAS2_FRONTAL}:22
+$IPTABLES -t nat -A PREROUTING -i ${ETH_WAN} -s ${IP_MAIL_OTRAEMPRESAMAS2_ES} -d ${IP_MADRID} -p tcp --dport 22148 -j DNAT --to-destination ${IP_CORREO_OTRAEMPRESAMAS2_FRONTAL}:22
+$IPTABLES -A FORWARD -i ${ETH_WAN} -d ${IP_CORREO_OTRAEMPRESAMAS2_FRONTAL} -p tcp --dport 22 -j ACCEPT
+$IPTABLES -t nat -A PREROUTING -i ${ETH_WAN} -d ${IP_WAN_REDIR_IPT} -p tcp --dport 22149 -j DNAT --to-destination ${IP_CORREO_OTRAEMPRESAMAS2_BUZONES}:22
+$IPTABLES -A FORWARD -i ${ETH_WAN} -d ${IP_CORREO_OTRAEMPRESAMAS2_BUZONES} -p tcp --dport 22 -j ACCEPT
+$IPTABLES -t nat -A PREROUTING -i ${ETH_WAN} -d ${IP_WAN_REDIR_IPT} -p tcp --dport 22150 -j DNAT --to-destination ${IP_CORREO_OTRAEMPRESAMAS2_CLIENTE}:22
+$IPTABLES -A FORWARD -i ${ETH_WAN} -d ${IP_CORREO_OTRAEMPRESAMAS2_CLIENTE} -p tcp --dport 22 -j ACCEPT
+
+
+
+
+
+# otraempresamas3 para opencities-otraempresamas4-devel: Acceso ssh
+for ipaddr in ${IP_OTRAEMPRESAMAS3[@]}; do
+    # Se permite acceso por ssh a otraempresamas1-devel.empresa.com a través del puerto 22251
+    $IPTABLES -t nat -A POSTROUTING -o ${ETH_WAN} -s ${IP_OPENCITIES_OTRAEMPRESAMAS4_DEVEL} -j SNAT --to ${IP_WAN_REDIR_IPT}
+    $IPTABLES -t nat -A PREROUTING -i ${ETH_WAN} -s ${ipaddr} -d ${IP_WAN_REDIR_IPT} -p tcp --dport 22251 -j DNAT --to-destination ${IP_OPENCITIES_OTRAEMPRESAMAS4_DEVEL}:22
+    $IPTABLES -A FORWARD -i ${ETH_WAN} -d ${IP_OPENCITIES_OTRAEMPRESAMAS4_DEVEL} -p tcp --dport 22 -j ACCEPT
+done
+
+# otraempresamas3 para opencities-otraempresamas4-devel: Acceso web y ssh
+for ipaddr in ${IP_OTRAEMPRESAMAS3[@]}; do
+    # Se permite acceso por http y https a otraempresamas1-devel.empresa.com
+    for puerto in 80 443; do
+        $IPTABLES -t nat -A POSTROUTING -o ${ETH_WAN} -s ${IP_OPENCITIES_OTRAEMPRESAMAS4_DEVEL} -j SNAT --to ${IP_WAN_REDIR_IPT}
+        $IPTABLES -t nat -A PREROUTING -i ${ETH_WAN} -s ${ipaddr} -d ${IP_WAN_REDIR_IPT} -p tcp --dport ${puerto} -j DNAT --to-destination ${IP_OPENCITIES_OTRAEMPRESAMAS4_DEVEL}
+        $IPTABLES -A FORWARD -i ${ETH_WAN} -d ${IP_OPENCITIES_OTRAEMPRESAMAS4_DEVEL} -p tcp --dport ${puerto} -j ACCEPT
+    done
+done
+
+# Para que funcione el gateway de 8 teneis que configurar vuestro firewall. Teneis que redirigir los siguientes puertos UDP al gateway GSM:
+# 	del 7060 al 7078
+# 	del 20000 al 20020
+#	IP origen: 46.137.105.173
+for puerto in `seq 7060 7078`; do
+        $IPTABLES -t nat -A POSTROUTING -o ${ETH_WAN} -s ${GSM_GETAFE} -j SNAT --to ${IP_WAN_REDIR_IPT}
+        $IPTABLES -t nat -A PREROUTING -i ${ETH_WAN} -s ${IP_CENTRALITA} -d ${IP_WAN_REDIR_IPT} -p udp --dport ${puerto} -j DNAT --to-destination ${GSM_GETAFE}
+        $IPTABLES -A FORWARD -i ${ETH_WAN} -d ${GSM_GETAFE} -p udp --dport ${puerto} -j ACCEPT
+done
+for puerto in `seq 20000 20020`; do
+        $IPTABLES -t nat -A POSTROUTING -o ${ETH_WAN} -s ${GSM_GETAFE} -j SNAT --to ${IP_WAN_REDIR_IPT}
+        $IPTABLES -t nat -A PREROUTING -i ${ETH_WAN} -s ${IP_CENTRALITA} -d ${IP_WAN_REDIR_IPT} -p udp --dport ${puerto} -j DNAT --to-destination ${GSM_GETAFE}
+        $IPTABLES -A FORWARD -i ${ETH_WAN} -d ${GSM_GETAFE} -p udp --dport ${puerto} -j ACCEPT
+done
+$IPTABLES -A FORWARD -s ${GSM_GETAFE} -m state -p udp --dport 53 --state NEW -j ACCEPT
+$IPTABLES -A FORWARD -s ${GSM_GETAFE} -m state -p udp --dport 123 --state NEW -j ACCEPT
+$IPTABLES -A FORWARD -s ${GSM_GETAFE} -m state -p udp -d ${IP_CENTRALITA} --state NEW -j ACCEPT
+$IPTABLES -A FORWARD -s ${GSM_GETAFE} -m state -p tcp -d ${IP_CENTRALITA} --state NEW -j ACCEPT
+
+# IASAP: Acceso ssh
+$IPTABLES -A FORWARD -i ${ETH_WAN} -d ${IP_IASAP_OC_DEMO} -p tcp --dport 22 -j ACCEPT
+$IPTABLES -A FORWARD -i ${ETH_WAN} -d ${IP_IASAP_DB_DEMO} -p tcp --dport 22 -j ACCEPT
+$IPTABLES -A FORWARD -i ${ETH_WAN} -d ${IP_IASAP_RIVER_DEMO} -p tcp --dport 22 -j ACCEPT
+for ipaddr in ${IP_IASAP_SSH[@]}; do
+    # Se permite acceso por ssh a iasap-oc-demo.empresa.com a través del puerto 22151
+    # Se permite acceso por ssh a iasap-db-demo.empresa.com a través del puerto 22152
+    # Se permite acceso por ssh a iasap-river-demo.empresa.com a través del puerto 22152
+    $IPTABLES -t nat -A POSTROUTING -o ${ETH_WAN} -s ${IP_IASAP_OC_DEMO} -j SNAT --to ${IP_WAN_WEBSERVICES}
+    $IPTABLES -t nat -A POSTROUTING -o ${ETH_WAN} -s ${IP_IASAP_DB_DEMO} -j SNAT --to ${IP_WAN_WEBSERVICES}
+    $IPTABLES -t nat -A POSTROUTING -o ${ETH_WAN} -s ${IP_IASAP_RIVER_DEMO} -j SNAT --to ${IP_WAN_WEBSERVICES}
+    $IPTABLES -t nat -A PREROUTING -i ${ETH_WAN} -s ${ipaddr} -d ${IP_WAN_WEBSERVICES} -p tcp --dport 22166 -j DNAT --to-destination ${IP_IASAP_OC_DEMO}:22
+    $IPTABLES -t nat -A PREROUTING -i ${ETH_WAN} -s ${ipaddr} -d ${IP_WAN_WEBSERVICES} -p tcp --dport 22165 -j DNAT --to-destination ${IP_IASAP_DB_DEMO}:22
+    $IPTABLES -t nat -A PREROUTING -i ${ETH_WAN} -s ${ipaddr} -d ${IP_WAN_WEBSERVICES} -p tcp --dport 22164 -j DNAT --to-destination ${IP_IASAP_RIVER_DEMO}:22
+done
+# IASAP: Acceso a los puertos 8080, 4848 y 1521 para el proyecto de IBEROBEKA (#2012030510000024)
+#
+$IPTABLES -t nat -A POSTROUTING -o ${ETH_WAN} -s ${IP_IASAP_RIVER_DEMO} -j SNAT --to ${IP_WAN_WEBSERVICES}
+for port in 8080 4848 1521; do
+    $IPTABLES -A FORWARD -i ${ETH_WAN} -d ${IP_IASAP_RIVER_DEMO} -p tcp --dport ${port} -j ACCEPT
+    for ipaddr in ${IP_IASAP_SSH[@]}; do
+        $IPTABLES -t nat -A PREROUTING -i ${ETH_WAN} -s ${ipaddr} -d ${IP_WAN_WEBSERVICES} -p tcp --dport ${port} -j DNAT --to-destination ${IP_IASAP_RIVER_DEMO}:22
+    done
+done
+
+
+# Acceso limitado a flash-media-devel cuya máquina se encuentra en la red 14
+$IPTABLES -t nat -A POSTROUTING -o ${ETH_WAN} -s ${IP_FLASH_MEDIA_DEVEL} -j SNAT --to ${IP_WAN_REDIR_IPT}
+# TCP 1111 Flash Media Administration Server listens for HTTP and RTMP requests on port 1111.
+# TCP 1935 Flash Media Server listens for RTMP/E requests on port 1935/TCP
+# TCP 8134 Flash Media Server forwards HTTP requests to Apache HTTP Server on port 8134.
+$IPTABLES -t nat -A PREROUTING -i ${ETH_WAN} -d ${IP_WAN_REDIR_IPT} -p tcp -m multiport --destination-ports 1935,8135 -j DNAT --to-destination ${IP_FLASH_MEDIA_DEVEL}
+$IPTABLES -t nat -A PREROUTING -i ${ETH_WAN} -s ${IP_CLIENTE_MSF} -d ${IP_WAN_REDIR_IPT} -p tcp -m multiport --destination-ports 22,80,443,1111 -j DNAT --to-destination ${IP_FLASH_MEDIA_DEVEL}
+$IPTABLES -A FORWARD -i ${ETH_WAN} -d ${IP_FLASH_MEDIA_DEVEL} -p tcp -m multiport --destination-ports 22,80,443,1111,1935,8135 -j ACCEPT
+# UDP 1935 Flash Media Server listens for RTMFP requests on port 1935/UDP.
+$IPTABLES -t nat -A PREROUTING -i ${ETH_WAN} -s ${IP_CLIENTE_MSF} -d ${IP_WAN_REDIR_IPT} -p udp -m multiport --destination-ports 1935 -j DNAT --to-destination ${IP_FLASH_MEDIA_DEVEL}
+$IPTABLES -A FORWARD -i ${ETH_WAN} -d ${IP_FLASH_MEDIA_DEVEL} -p udp -m multiport --destination-ports 1935 -j ACCEPT
+
+
+# Acceso a los puertos de media-ahs-demo-market para streaming de video.
+$IPTABLES -t nat -A PREROUTING -i ${ETH_WAN} -d ${IP_WAN_REDIR_IPT} -p tcp -m multiport --destination-ports 1936,8134 -j DNAT --to-destination ${IP_MEDIA_HSA_DEMO_MARKET}
+$IPTABLES -A FORWARD -i ${ETH_WAN} -d ${IP_MEDIA_HSA_DEMO_MARKET} -p tcp -m multiport --destination-ports 1936,8134 -j ACCEPT
+# Acceso a los puertos de media-ahs-demo-market para mensajeria XMPP
+$IPTABLES -t nat -A PREROUTING -i ${ETH_WAN} -d ${IP_WAN_REDIR_IPT} -p tcp -m multiport --destination-ports 5222 -j DNAT --to-destination ${IP_MEDIA_HSA_DEMO_MARKET}
+$IPTABLES -A FORWARD -i ${ETH_WAN} -d ${IP_MEDIA_HSA_DEMO_MARKET} -p tcp -m multiport --destination-ports 5222 -j ACCEPT
+# UDP 1936 Flash Media Server listens for RTMFP requests on port 1936/UDP.
+$IPTABLES -t nat -A PREROUTING -i ${ETH_WAN} -d ${IP_WAN_REDIR_IPT} -p udp -m multiport --destination-ports 1936 -j DNAT --to-destination ${IP_MEDIA_HSA_DEMO_MARKET}
+$IPTABLES -A FORWARD -i ${ETH_WAN} -d ${IP_MEDIA_HSA_DEMO_MARKET} -p udp -m multiport --destination-ports 1936 -j ACCEPT
+
+
+#--
+# FIN
+#--
+# Activo el enrutamiento
+echo "1" > /proc/sys/net/ipv4/ip_forward
+
+exit 0
